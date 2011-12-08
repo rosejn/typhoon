@@ -1,0 +1,16 @@
+# Typhoon drum machine
+
+A project in Overtone to recreate the Dave Smith Instruments Tempest drum machine
+in software.
+
+## Development
+
+Feel free to fork and help develop it, or take it in different directions.
+The goal is to make this a community project, and let people build all sorts
+of different interfaces for it.
+
+It helps a lot to checkout the Tempest user manual and demo videos here:
+
+http://www.davesmithinstruments.com/products/tempest/
+
+Distributed under the Eclipse Public License, the same as Clojure.
