@@ -49,8 +49,7 @@
 (def one-clap (load-sample "samples/909 06 - Percussion/909hc.wav"))
 (def hi-hat (load-sample "samples/909 07 - Hi Hat/909chh_d75.wav"))
 
-
-(defsynth typhoon [note DEFAULT-NOTE velocity 127
+(defsynth typhoon [note DEFAULT-NOTE velocity 127 gate 1
 
                    ;; "analog" oscillator settings
                    ;osc-slop 0.0
@@ -61,11 +60,12 @@
 
                    ; 0 => use base-pitch, 1 => use note
                    osc1-key-follow 1
-                   osc1-wave 1 osc1-duty 0.5 osc1-glide 0.0
+                   osc1-wave 0 osc1-duty 0.5 osc1-glide 0.0
 
                    osc2-key-follow 1
                    osc2-base-pitch DEFAULT-NOTE osc2-fine 0.0
-                   osc2-wave 2 osc2-duty 0.5 osc2-glide 0.0
+                   osc2-wave 1 osc2-duty 0.5 osc2-glide 0.0
+                   pluck-decay -20 pluck-coef 0.7
 
                    sub-osc-level 0.0
                    mix-1-2 0.5 ; 0 = osc1, 1 = osc2, 0.5 = even mix
@@ -96,17 +96,20 @@
                    lpf-delay 0.0 lpf-attack 0.001 lpf-peak-hold 0.0
                    lpf-decay 0.001 lpf-sustain 0.4 lpf-release 0.05
 
-                   hpf-cutoff 0.0 hpf-key-track 0.0
+                   hpf-cutoff 12 hpf-key-track 0.0
 
                    ;; vca settings
-                   amp-env-amount 1.0
-                   amp-delay 0.0 amp-attack 0.001 amp-peak-hold 0.0
-                   amp-decay 0.05 amp-sustain 0.5 amp-release 0.01
+                   amp-env-amount 0.5 amp-env-velocity-amount 0.5
+                   amp-delay 0.0 amp-attack 0.1 amp-peak-hold 0.01
+                   amp-decay 0.1 amp-sustain 0.5 amp-release 0.1
                    amp-env-curve -4
 
                    vol 0.99 pan 0.5]
 
   (let [
+        ; just for testing...
+        ;gate (impulse:kr 2)
+
         ; convert velocity from midi range to [0-1]
         velocity   (/ velocity 127.0)
 
@@ -142,11 +145,13 @@
         osc2-pitch (select:kr osc2-key-follow [osc2-base-pitch note])
         osc2-freq  (* (midicps osc2-pitch) (pow 2 (/ osc2-fine 1200.0)))
         osc2-freq  (lag:kr osc2-freq osc2-glide)
-        osc2-sin   (sin-osc osc2-freq)
+        pluck-dly  (/ 1.0 osc2-freq)
+        osc2-pluck (pluck (* 0.8 (white-noise)) gate pluck-dly pluck-dly
+                           pluck-decay pluck-coef)
         osc2-saw   (saw osc2-freq)
         osc2-tri   (* 7 (one-pole (pulse osc2-freq) 0.99))
         osc2-pulse (pulse osc2-freq osc2-duty)
-        osc2       (select osc2-wave [osc2-sin osc2-saw osc2-tri osc2-pulse])
+        osc2       (select osc2-wave [osc2-pluck osc2-saw osc2-tri osc2-pulse])
 
         osc12-mix  (x-fade2 osc1 osc2 (mul-add mix-1-2 2 -1))
 
@@ -184,8 +189,6 @@
         ;; filter section
 
         ; low-pass filter
-        ; TODO: incorporate velocity and lpf-env-velocity-amount so that the velocity
-        ; can effect the amount of envelope depth
         lpf-cent-full-offset (* note (* lpf-key-track 1200))
         lpf-pitch-offset     (round (/ lpf-cent-full-offset 1200) 1)
         lpf-cent-offset      (mod lpf-cent-full-offset 1200)
@@ -194,10 +197,11 @@
         offset-lpf-cutoff           (+ lpf-cutoff lpf-key-offset)
         lpf-envelope         (env-gen (dapdsr lpf-delay lpf-attack lpf-peak-hold
                                                          lpf-decay lpf-sustain lpf-release
-                                                         :curve lpf-env-curve))
-        enveloped-lpf-cutoff           (- lpf-cutoff
-                                (* lpf-cutoff lpf-env-amount (- 1 lpf-envelope)))
-        low-filtered         (rlpf all-osc enveloped-lpf-cutoff lpf-resonance)
+                                                         :curve lpf-env-curve)
+                                      gate)
+        lpf-cutoff           (- lpf-cutoff (* lpf-cutoff lpf-env-amount (- 1 lpf-envelope)))
+        lpf-cutoff           (- lpf-cutoff (* lpf-cutoff lpf-env-velocity-amount (- 1 velocity)))
+        low-filtered         (rlpf all-osc lpf-cutoff lpf-resonance)
 
         ; need to experiment with different lowpass filters...
         ;lpf (moog-ff mixed lpf-cutoff (* 4 lpf-resonance))
@@ -207,23 +211,20 @@
         hpf-pitch-offset     (round (/ hpf-cent-full-offset 1200) 1)
         hpf-cent-offset      (mod hpf-cent-full-offset 1200)
         hpf-key-offset       (* (pow 2 (/ hpf-pitch-offset 12)) hpf-cutoff)
-        hpf-cutoff           (- hpf-cutoff hpf-key-offset)
+        offset-hpf-cutoff    (- hpf-cutoff hpf-key-offset)
         high-filtered        (hpf low-filtered hpf-cutoff)
 
         ; mix in osc's 3 and 4 post-filter
         full-snd        (+ high-filtered osc34-post-filter)
 
-        fout            (local-out all-osc)
-        ]
-    (out 0 (pan2 high-filtered 0.5 0.5))))
-        (comment
         ; vca with amplitude envelope
         amp-env (env-gen (dapdsr amp-delay amp-attack amp-peak-hold
                                  amp-decay amp-sustain amp-release
-                                 :curve amp-env-curve))
+                                 :curve amp-env-curve) gate)
 
         vca (- vol (* vol amp-env-amount (- 1 amp-env)))
-        amped-snd  (* vca full-snd)
+        vca (- vca (* vca amp-env-velocity-amount (- 1 velocity)))
+        amped-snd  (limiter (* vca full-snd))
 
         ; panning
         [left-chan right-chan] (pan2 amped-snd pan)
@@ -231,9 +232,6 @@
         ; left channel goes through feedback loop
         feedback-out (local-out left-chan)]
   (out 0 [left-chan right-chan])))
-
-
-
 
 ; Equation to have envelopes with adjustable amount setting:
 ; output = input - (input * amount * (1 - envelope))
@@ -284,37 +282,38 @@
 ; * swing: modify 16/th note swing 50% => straight 16ths & 66% => triplet swing
 ; * beat roll: adjustable length stutter effect (loop a portion of sound by adjustable length)
 
-;(def kick  (sample "kick.wav"))
-;(def snare (sample "snare.wav"))
-;(def hit   (sample "hit.wav"))
+(def METRONOME-BUS (control-bus))
 
-(def insts {:kick  kick
-            :snare snare
-            :hit   c-hat})
+(def SEQUENCER-STEPS 16)
+(def SEQUENCER-BUS (control-bus))
 
-(def pat {:kick  [1 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0]
-          :snare [0 0 0 0 1 0 0 0 0 0 0 0 1 0 0 0]
-          :hit   [0 0 1 0 0 0 0 0 0 1 0 0 0 1 0 0]})
+(def sequencer-note-buf (buffer SEQUENCER-STEPS))
 
-(def metro (metronome 135))
+(buffer-write! sequencer-note-buf 0 (map #(+ 12 %) [50 50 54 50 57 50 45 49 50 50 54 50 57 50 45 49]))
 
-(defn play-pat [beat i]
-  (let [t (mod beat 4)
-        p (vec (take 4 (drop (* 4 t) (pat i))))]
-    (if (= 1 (p 0)) (at (metro (+ 0.00 beat)) ((insts i))))
-    (if (= 1 (p 1)) (at (metro (+ 0.25 beat)) ((insts i))))
-    (if (= 1 (p 2)) (at (metro (+ 0.50 beat)) ((insts i))))
-    (if (= 1 (p 3)) (at (metro (+ 0.75 beat)) ((insts i))))))
+(defsynth sequencer [bpm 120]
+  (let [trig               (impulse:kr (/ bpm 60))
+        beat-dur           (/ (/ 1000 (/ bpm 60)) 1000)
+        indexes            (dseq (range SEQUENCER-STEPS) INF)
+        freqs              (dbufrd sequencer-note-buf indexes)
+        velocities         (drand [100 127 80] INF)
+        gate-open          (dseq [1] INF)
+        gate-close         (dseq [0] INF)
+        [note-gen vel-gen gate-open-gen] (demand:kr trig 0 [freqs velocities gate-open])
+        close-trig (t-delay trig (* beat-dur 0.999))
+        gate-close-gen     (demand close-trig 0 gate-close)
+        ;gate-gen (demand:kr (dseq [(- beat-dur 0.001) 0.001] INF) 0 gates)
+        ]
+;    (poll trig note-gen "note: ")
+;    (poll trig vel-gen "velocity: ")
+;    (poll trig gate-open-gen "gate open: ")
+;    (poll trig gate-close-gen "gate close: ")
+    (out:kr (:id SEQUENCER-BUS) [note-gen vel-gen gate-open-gen])
+    (out:kr (+ (:id SEQUENCER-BUS) 2) gate-close-gen)
+    ))
 
-(defn player [beat]
-  (doseq [i (keys insts)] (play-pat beat i))
-  (apply-at (metro (inc beat)) #'player (inc beat) []))
-
-;(player (metro))
-
-;(metro :bpm 160)
-;(metro :bpm 90)
-
-;(defn player [beat] "stop")
-
-
+; Now bind the sequencer to the synth by mapping control busses to parameters:
+; * node-map-n-controls not working, but this does...
+(overtone.sc.node/node-map-controls 36 :note SEQUENCER-BUS)
+(overtone.sc.node/node-map-controls 36 :velocity (+ 1 (:id SEQUENCER-BUS)))
+(overtone.sc.node/node-map-controls 36 :gate (+ 2 (:id SEQUENCER-BUS)))
